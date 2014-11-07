@@ -1,9 +1,4 @@
 '''
-Created on Nov 6, 2014
-
-@author: davidkavanagh
-'''
-'''
 Created on Oct 29, 2014
 
 @author: davidkavanagh
@@ -13,13 +8,10 @@ import os
 import re
 import sys
 import time
-import glob
+
 import multiprocessing as mp
 import numpy as np
 
-
-sampleGeneSummary = {}
-sampleIsoformSummary = {}
 
 class misoGene():
     '''
@@ -42,7 +34,7 @@ class misoGene():
 class misoIsoform():
         '''
         The idea here is to have an object represent each unique event,
-        with the sampleData attribute holding the PSIs, counts, and other sample level info
+        with the sampleData attribute holding the PSIs
         '''
         def __init__(self, event_name, isoformID, chrom, strand, mRNA_start, mRNA_end):
             self.event_name = event_name
@@ -63,21 +55,23 @@ class misoIsoform():
 
 def findMisoFiles(inputDir):
     '''
-    must use a quoted string for the inputDir on the command line. 
-    glob expansion happens in python and is much faster than looping through the directory structure
+    search directory structure of miso files, and stores their paths to a dict, 
+    mapping sample name to the path of the miso gene file
     '''
-    files = glob.glob(inputDir)
-    
-    sample_gene_miso_files = {} 
-    
-    pattern = re.compile("([A-Z]{4}_RNA_[A-Z_]+_\d+)")  
-    
-    for f in files:
-        geneName = os.path.splitext(os.path.basename(f))[0]
-        sampleName = pattern.search(f).group(0)
-        sample_gene_miso_files.setdefault(sampleName, []).append(f)
+    sample_gene_miso_files = {}   
+    for root, dir, files in os.walk(inputDir):
+        if os.path.split(root)[1][:3] == 'chr':
+            for f in files:
+                if f[-7:] == '.pickle':
+                    break
+                elif f[-5:] == '.miso':
+                    geneName = os.path.splitext(os.path.basename(f))[0]
+                    sampleName = re.search("([A-Z]{4}_RNA_[A-Z_]+_\d+)", root).group(0)
+                    sample_gene_miso_files.setdefault(sampleName, []).append(os.path.join(root,f))
+            sys.stdout.write('Searching {0} for miso files\n'.format(root))
 
-    sys.stdout.write('Found {0} miso files for {1} samples\n'.format(len(files),len(sample_gene_miso_files)))
+    
+    sys.stdout.write('Found {1} miso files for {0} samples\n'.format(len(sample_gene_miso_files), sum([len(v) for v in sample_gene_miso_files.values()])))
 
     return sample_gene_miso_files
 
@@ -123,26 +117,23 @@ def parse_miso_line(line):
     #counts_reads = [i.rsplit(':')[1] for i in counts]
     
     #captures the 1 of 1:0
-    #assigned_counts_index = [int(i.rsplit(':')[0]) for i in assigned_counts] #wasn't using this anywhere
+    assigned_counts_index = [int(i.rsplit(':')[0]) for i in assigned_counts]
     #captures the 0 of 1:0
     assigned_counts_reads = [int(i.rsplit(':')[1]) for i in assigned_counts]
     
-    parsed_line = (isoforms, assigned_counts_reads,
+    parsed_line = (isoforms, assigned_counts_index, assigned_counts_reads,
                    chrom, strand, mRNA_starts, mRNA_ends )
     
     return parsed_line
 
-def summarizeGeneMisoFiles_worker(args):
+def summarizeGeneMisoFiles_worker(sampleName, filePaths, q):
     '''
     Takes one sample and all the gene miso file for that sample and an mp queue
     Process all the genes for this one person, then return the results to the listener
     for inserting into the global objects
     '''
-    sampleName = args[0]
-    filePaths = args[1]
-    idx = args[2]
     
-    sys.stdout.write('{0} got {1} genes files from sample {2} (chunk no. {3}) \n'.format(mp.current_process().name,len(filePaths), sampleName, idx))
+    sys.stdout.write('{0} got {1} genes files from sample {2}\n'.format(mp.current_process().name,len(filePaths), sampleName))
     
     geneSummary = {}
     isoformSummary = {}
@@ -152,12 +143,12 @@ def summarizeGeneMisoFiles_worker(args):
         
         misoFile = open(filename, 'r')
         
-        isoforms, assigned_counts_reads, \
+        isoforms, assigned_counts_index, assigned_counts_reads, \
         chrom, strand, mRNA_starts, mRNA_ends = parse_miso_line(misoFile.next())
         
         misoFile.next() #skip the next line it's just "sampled_psi\tlog.score"
         
-        nMCMCsamplings = 2700 # this seems to be constant
+        nMCMCsamplings = 2700 # this seems to constant
         
         psis = np.zeros([nMCMCsamplings, len(isoforms)])
     
@@ -183,34 +174,62 @@ def summarizeGeneMisoFiles_worker(args):
             most_start = max([int(i) for i in mRNA_starts])
             most_end = min([int(i) for i in mRNA_ends])
         '''
-        bundling up the gene and isoform results for passing back to the result list. Probably not the optimal way of doing this.
+        bundling up the gene and isoform results for passing back the listener. Probably not the optimal way of doing this.
         '''
         geneSummary[geneName] = {'geneName':geneName, 'chrom':chrom, 'strand':strand, 'start':most_start, 'end':most_end, 'sampleName':sampleName, 'reads':totalAssignedReads}
         isoformSummary[geneName] = (isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads)
         
+        '''
+        Not really necessary, but more to convince myself that it's not crashing or stalling!
+        
+        c += 1
+        sys.stdout.write('\r{0} genes done!'.format(c))
+        sys.stdout.flush()
+        '''
     
-    res = (sampleName, geneSummary, isoformSummary)  
+    res = (sampleName, geneSummary, isoformSummary)
+    q.put(res)    
     return res
 
-def combineMappedResults(result_List):
+def summarizeGeneMisoFile_listener(q):
+    
     sampleGeneSummary = {}
     sampleIsoformSummary = {}
     
-    for sampleName, geneSummary, isoformSummary in result_List:
+    start = time.time()
+    while 1:
+        m = q.get()
+        if m == 'kill':
+            break
+        '''
+        if stuff is returned from the queue - unpack the various data structures, assign the genes to global genes dict
+        assign the isoforms for that gene to the global isoforms dict.
+        '''
+        sampleName = m[0]
+        geneSummary = m[1]
+        isoformSummary = m[2]
 
+        
         for gene, data in geneSummary.iteritems():
+
             sampleGeneSummary.setdefault(data['geneName'], misoGene(data['geneName'], data['chrom'], data['strand'], data['start'], data['end'])\
                                ).addSampleData(data['sampleName'], data['reads'])
-
+            
             isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, \
-                sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads = isoformSummary[gene]
-                 
+            sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads = isoformSummary[gene]
+            
+
             for i, iso in enumerate(isoforms):
                 thisEventName = '{0}|{1}'.format(geneName, iso)
                 sampleIsoformSummary.setdefault(thisEventName, misoIsoform(geneName, iso, chrom, strand, mRNA_starts[i], mRNA_ends[i])\
                                           ).addSampleData(sampleName, miso_means[i], miso_sds[i], miso_ci_low[i], miso_ci_high[i], assigned_counts_reads[i])
-                                          
-    return (sampleGeneSummary, sampleIsoformSummary)
+        sys.stdout.write('Processed {0} genes from sample {1}\n'.format(len(sampleGeneSummary), sampleName))
+    
+    sys.stdout.write('Finished parsing miso sample gene files\n')
+    finish = time.time() - start
+    sys.stdout.write('Total parsing time was {0} seconds \n'.format(finish))
+    return sampleGeneSummary, sampleIsoformSummary
+
                                           
 def outputMatrix(filePrefix, isoObj, sampleList, dataType):
     '''
@@ -221,7 +240,7 @@ def outputMatrix(filePrefix, isoObj, sampleList, dataType):
     sys.stdout.write('writing {1} matrix to file {0}\n'.format(outputFileName, dataType))
     outputFile = open(outputFileName, 'w')
     outputFile.write('event_name\tisoform\t{0}\n'.format('\t'.join(sampleList)))
-    for obj in isoObj.values():
+    for isoID, obj in isoObj.iteritems():
         #build and output string starting with the event name and the isoform ID
         output = '{0}\t{1}'.format(obj.event_name, obj.isoformID)
         
@@ -257,19 +276,7 @@ def outputGeneCountsMatrix(filePrefix, geneObj, sampleList):
         output += '\t' + '\t'.join(samples)
         output += '\n'
         outputFile.write(output)
-    outputFile.close()
-    
-def outputIsoformMetaInfo(filePrefix, isoObj):
-    outputFileName = filePrefix + 'isoformMetaInfo.txt'
-    sys.stdout.write('writing isoform meta info to file {0}\n'.format(outputFileName))
-    outputFile = open(outputFileName, 'w')
-    outputFile.write('isoformID\tGENE\tCHROM\tSTRAND\tSTART\tEND')
-    for iso, obj in isoObj.iteritems():
-        output = '{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n'.format(iso, obj.event_name, obj.chrom, obj.strand, obj.mRNA_start, obj.mRNA_end)
-        outputFile.write(output)
-    outputFile.close()
-        
-
+    outputFile.close()  
 
 def slice_it(li, n):
     start = 0
@@ -305,48 +312,38 @@ def main():
     sample_gene_miso_files = findMisoFiles(inputDir)
     sampleList = sample_gene_miso_files.keys()
     #must use Manager queue here, or will not work
+    manager = mp.Manager()
+    q = manager.Queue()    
     pool = mp.Pool(nCpus)
 
     #put listener to work first
+    watcher = pool.apply_async(summarizeGeneMisoFile_listener, (q,))
     
     jobs = []
-    
-    idx = 0
+
     for sampleName, misoPaths in sample_gene_miso_files.iteritems():
-            chunked_misoPaths = slice_it(misoPaths, (nCpus-2))
-            for chunk in chunked_misoPaths:
-                job = (sampleName, chunk, idx)
-                jobs.append(job)
-                idx += 1
-     
-    start = time.time()
+        chunked_misoPaths = slice_it(misoPaths, (nCpus-2))
+        for chunk in chunked_misoPaths:
+            job = pool.apply_async(summarizeGeneMisoFiles_worker, (sampleName, chunk, q))
+            jobs.append(job)
     
-    results = pool.map(summarizeGeneMisoFiles_worker, jobs)
+    for job in jobs: 
+        job.get()
+
+    #now we are done, kill the listener
+    q.put('kill')
     
     pool.close()
     pool.join()
     
-    finish = time.time() - start
-    
-    sys.stdout.write('Finished parsing miso sample gene files\n')
-    sys.stdout.write('Total parsing time was {0} seconds \n'.format(finish))
-    
-    sys.stdout.write('Combining results...\n')
-    start = time.time()
-    sampleGeneSummary, sampleIsoformSummary = combineMappedResults(results)
-    finish = time.time() - start
-    sys.stdout.write('Results combined. Time taken to combine: {0}\n'.format(finish))
-     
+    sampleGeneSummary = watcher.get()[0]
+    sampleIsoformSummary = watcher.get()[1]
+
     outputMatrix(outputFilePrefix, sampleIsoformSummary, sampleList, 'mean')
     outputMatrix(outputFilePrefix, sampleIsoformSummary, sampleList, 'sd')
     outputMatrix(outputFilePrefix, sampleIsoformSummary, sampleList, 'assigned_reads')
     
     outputGeneCountsMatrix(outputFilePrefix, sampleGeneSummary, sampleList)
-    
-    outputIsoformMetaInfo(outputFilePrefix, sampleIsoformSummary)
-    
-    
-
 
 if __name__ == '__main__':
     main()
