@@ -44,9 +44,10 @@ class misoIsoform():
         The idea here is to have an object represent each unique event,
         with the sampleData attribute holding the PSIs, counts, and other sample level info
         '''
-        def __init__(self, event_name, isoformID, chrom, strand, mRNA_start, mRNA_end):
+        def __init__(self, event_name, transcriptID, isoformID, chrom, strand, mRNA_start, mRNA_end):
             self.event_name = event_name
             self.isoformID = isoformID
+            self.transcriptID = transcriptID
             self.chrom = chrom
             self.strand = strand
             self.mRNA_start = mRNA_start
@@ -94,6 +95,17 @@ def parse_miso_line(line):
         strFields[entries[0]] = entries[1]
  
     isoforms = ast.literal_eval(strFields['isoforms'])
+    
+    '''
+    Isoforms are of the form :
+    'exon:ENST00000410086:1_exon:ENST00000410086:2_exon:ENST00000410086:3_exon:ENST00000410086:4_exon:ENST00000410086:5'
+    '''
+    transcriptIDs = [i.rsplit(':')[1] for i in isoforms] 
+    '''
+    #assuming that the transcript IDs are always the same across of the length of the isoforms (maybe not for novel stuff), 
+    and that each TxID is unique for each isoform
+    '''
+    
     chrom = strFields['chrom']
     strand = strFields['strand']
     mRNA_starts = strFields['mRNA_starts'].rsplit(',')
@@ -127,7 +139,7 @@ def parse_miso_line(line):
     #captures the 0 of 1:0
     assigned_counts_reads = [int(i.rsplit(':')[1]) for i in assigned_counts]
     
-    parsed_line = (isoforms, assigned_counts_reads,
+    parsed_line = (transcriptIDs, isoforms, assigned_counts_reads,
                    chrom, strand, mRNA_starts, mRNA_ends )
     
     return parsed_line
@@ -152,7 +164,7 @@ def summarizeGeneMisoFiles_worker(args):
         
         misoFile = open(filename, 'r')
         
-        isoforms, assigned_counts_reads, \
+        transcriptIDs, isoforms, assigned_counts_reads, \
         chrom, strand, mRNA_starts, mRNA_ends = parse_miso_line(misoFile.next())
         
         misoFile.next() #skip the next line it's just "sampled_psi\tlog.score"
@@ -174,8 +186,7 @@ def summarizeGeneMisoFiles_worker(args):
         miso_ci_high = np.percentile(psis, axis=0, q=97.5)
         
         totalAssignedReads = sum([int(i) for i in assigned_counts_reads])
-        
-        
+              
         if strand == '+':
             most_start = min([int(i) for i in mRNA_starts])
             most_end = max([int(i) for i in mRNA_ends])
@@ -186,7 +197,7 @@ def summarizeGeneMisoFiles_worker(args):
         bundling up the gene and isoform results for passing back to the result list. Probably not the optimal way of doing this.
         '''
         geneSummary[geneName] = {'geneName':geneName, 'chrom':chrom, 'strand':strand, 'start':most_start, 'end':most_end, 'sampleName':sampleName, 'reads':totalAssignedReads}
-        isoformSummary[geneName] = (isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads)
+        isoformSummary[geneName] = (transcriptIDs, isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads)
         
     
     res = (sampleName, geneSummary, isoformSummary)  
@@ -202,28 +213,34 @@ def combineMappedResults(result_List):
             sampleGeneSummary.setdefault(data['geneName'], misoGene(data['geneName'], data['chrom'], data['strand'], data['start'], data['end'])\
                                ).addSampleData(data['sampleName'], data['reads'])
 
-            isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, \
+            transcriptIDs, isoforms, geneName, chrom, strand, mRNA_starts, mRNA_ends, \
                 sampleName, miso_means, miso_sds, miso_ci_high, miso_ci_low, assigned_counts_reads = isoformSummary[gene]
                  
             for i, iso in enumerate(isoforms):
                 thisEventName = '{0}|{1}'.format(geneName, iso)
-                sampleIsoformSummary.setdefault(thisEventName, misoIsoform(geneName, iso, chrom, strand, mRNA_starts[i], mRNA_ends[i])\
+                sampleIsoformSummary.setdefault(thisEventName, misoIsoform(geneName, transcriptIDs[i], iso, chrom, strand, mRNA_starts[i], mRNA_ends[i])\
                                           ).addSampleData(sampleName, miso_means[i], miso_sds[i], miso_ci_low[i], miso_ci_high[i], assigned_counts_reads[i])
                                           
     return (sampleGeneSummary, sampleIsoformSummary)
                                           
 def outputMatrix(filePrefix, isoObj, sampleList, dataType):
     '''
-    Output psis matrix
+    Output different matrix
     '''
-                                        
-    outputFileName = filePrefix + '_{0}Matrix.txt'.format(dataType) 
+    if dataType == 'mean':
+        filePostFix = '_meanPsiMatrix.txt'
+    if dataType == 'sd':
+        filePostFix = '_standardDevMatrix.txt'
+    if dataType == 'assigned_reads':
+        filePostFix = '_assignedReadsMatrix.txt'
+    
+    outputFileName = filePrefix + filePostFix
     sys.stdout.write('writing {1} matrix to file {0}\n'.format(outputFileName, dataType))
     outputFile = open(outputFileName, 'w')
-    outputFile.write('event_name\tisoform\t{0}\n'.format('\t'.join(sampleList)))
+    outputFile.write('transcriptID\t{0}\n'.format('\t'.join(sampleList)))
     for obj in isoObj.values():
         #build and output string starting with the event name and the isoform ID
-        output = '{0}\t{1}'.format(obj.event_name, obj.isoformID)
+        output = '{0}'.format(obj.transcriptID)
         
         samples = []
         for s in sampleList:
@@ -260,12 +277,12 @@ def outputGeneCountsMatrix(filePrefix, geneObj, sampleList):
     outputFile.close()
     
 def outputIsoformMetaInfo(filePrefix, isoObj):
-    outputFileName = filePrefix + 'isoformMetaInfo.txt'
+    outputFileName = filePrefix + '_isoformMetaInfo.txt'
     sys.stdout.write('writing isoform meta info to file {0}\n'.format(outputFileName))
     outputFile = open(outputFileName, 'w')
-    outputFile.write('isoformID\tGENE\tCHROM\tSTRAND\tSTART\tEND')
+    outputFile.write('transcriptID\tisoformID\tGENE\tCHROM\tSTRAND\tSTART\tEND\n')
     for iso, obj in isoObj.iteritems():
-        output = '{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n'.format(iso, obj.event_name, obj.chrom, obj.strand, obj.mRNA_start, obj.mRNA_end)
+        output = '{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\n'.format(obj.transcriptID, obj.isoformID, obj.event_name, obj.chrom, obj.strand, obj.mRNA_start, obj.mRNA_end)
         outputFile.write(output)
     outputFile.close()
         
