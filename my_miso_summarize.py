@@ -69,7 +69,15 @@ def findMisoFiles(inputDir):
     '''
     files = glob.glob(inputDir)
     
-    sample_gene_miso_files = {} 
+    sample_gene_miso_files = {}
+     
+    '''
+    this is a real hack, will not work if sample name scheme changes
+    A better strategy would be to have an input file with two fields:
+    SampleName \t Path/to/dir/with/miso/files/
+    
+    Then use glob.glob() on each sample path to get all miso files for each sample. 
+    '''
     
     pattern = re.compile("([A-Z]{4}_RNA_[A-Z_]+_\d+)")  
     
