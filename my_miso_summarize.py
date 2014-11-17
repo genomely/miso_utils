@@ -54,7 +54,7 @@ class misoIsoform():
             self.mRNA_end = mRNA_end
             self.sampleData = {}
         
-        def addSampleData(self,sampleName, miso_posterior_mean, ci_low, ci_high, miso_stdev, assigned_reads):
+        def addSampleData(self,sampleName, miso_posterior_mean, miso_stdev, ci_low, ci_high,assigned_reads):
             samplesAlreadySeen = set(self.sampleData.keys())
             if sampleName not in samplesAlreadySeen:
                 self.sampleData[sampleName] = {'mean':miso_posterior_mean, 'ci_low':ci_low, 'ci_high':ci_high, 'sd': miso_stdev, 'assigned_reads':assigned_reads}
