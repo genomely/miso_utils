@@ -1,5 +1,6 @@
 #BSUB -q premium
 #BSUB -J misoSummarise_cmc624
+#BSUB -R span[hosts=1]
 #BSUB -P acc_PBG
 #BSUB -n 64
 #BSUB -R "rusage[mem=3000]"
