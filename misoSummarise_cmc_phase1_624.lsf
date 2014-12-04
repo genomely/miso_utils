@@ -1,0 +1,18 @@
+#BSUB -q premium
+#BSUB -J misoSummarise_cmc624
+#BSUB -P acc_PBG
+#BSUB -n 64
+#BSUB -R "rusage[mem=3000]"
+#BSUB -W 24:00
+#BSUB -o /sc/orga/projects/CommonMind/data/FROM_CORE/Production/miso_summarize/cmc_phase1_624.stdout
+#BSUB -eo /sc/orga/projects/CommonMind/data/FROM_CORE/Production/miso_summarize/cmc_phase1_624.stderr
+#BSUB -L /bin/bash
+
+
+
+cd /sc/orga/projects/CommonMind/data/FROM_CORE/Production/miso_summarize/cmc_phase1_624
+
+module load python py_packages
+
+python /sc/orga/projects/CommonMind/data/FROM_CORE/miso_utils/my_miso_summarize.py '/sc/orga/projects/CommonMind/data/FROM_CORE/Phase1/*/Processed/RAPiD.2_0_0/miso/using_cmc624_PhaseI/chr*/*.miso' misoDefaults 50  
+
